@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Portal Live Session — Voice, Chat & PDF</title>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <style>
+    :root {
+      --primary: #2563eb;
+      --primary-dark: #1d4ed8;
+      --bg: #f1f5f9;
+      --card: #ffffff;
+      --border: #cbd5e1;
+      --text: #0f172a;
+      --muted: #64748b;
+      --green: #16a34a;
+      --red: #dc2626;
+    }
+    * { box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Simulator Control Bar */
+    .sim-bar {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 10px 20px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      font-size: 13px;
+    }
+    .sim-bar strong { color: #38bdf8; }
+    .sim-bar select, .sim-bar input {
+      padding: 5px 10px;
+      border-radius: 6px;
+      border: 1px solid #334155;
+      background: #1e293b;
+      color: white;
+      font-size: 13px;
+    }
+    .sim-bar button {
+      padding: 6px 14px;
+      background: #38bdf8;
+      color: #0f172a;
+      border: none;
+      border-radius: 6px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .sim-bar button:hover { background: #7dd3fc; }
+
+    /* Main Split Workspace */
+    .workspace {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 430px 1fr;
+      gap: 16px;
+      padding: 16px;
+      overflow: hidden;
+    }
+    @media (max-width: 900px) {
+      .workspace { grid-template-columns: 1fr; }
+      .pdf-panel { display: none; }
+    }
+
+    /* Chat & Call Panel */
+    .chat-panel {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.04);
+    }
+
+    .chat-header {
+      padding: 14px 16px;
+      background: var(--primary);
+      color: white;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .chat-header h3 { margin: 0; font-size: 15px; }
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .badge {
+      font-size: 11px;
+      padding: 4px 9px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.2);
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .call-start-btn {
+      padding: 6px 11px;
+      background: var(--green);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .call-start-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    /* Active / Incoming Call Strip */
+    .call-bar {
+      padding: 10px 14px;
+      background: #0f172a;
+      color: white;
+      display: none;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+    }
+    .call-bar.ringing { background: #1e3a8a; }
+    .call-bar.active { background: #064e3b; }
+    .call-controls { display: flex; gap: 6px; }
+    .btn-sm {
+      padding: 5px 10px;
+      border: none;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-accept { background: var(--green); color: white; }
+    .btn-end { background: var(--red); color: white; }
+    .btn-mute { background: rgba(255,255,255,0.2); color: white; }
+    .btn-mute.muted { background: #f59e0b; color: #0f172a; }
+
+    .messages {
+      flex: 1;
+      padding: 16px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      background: #f8fafc;
+    }
+
+    .sys-msg {
+      align-self: center;
+      font-size: 11.5px;
+      color: var(--muted);
+      background: #e2e8f0;
+      padding: 4px 12px;
+      border-radius: 999px;
+      text-align: center;
+    }
+
+    .msg {
+      max-width: 82%;
+      padding: 10px 13px;
+      border-radius: 12px;
+      font-size: 13.5px;
+      line-height: 1.4;
+      word-break: break-word;
+    }
+    .msg.mine {
+      align-self: flex-end;
+      background: var(--primary);
+      color: white;
+      border-bottom-right-radius: 2px;
+    }
+    .msg.theirs {
+      align-self: flex-start;
+      background: white;
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-bottom-left-radius: 2px;
+    }
+    .meta {
+      font-size: 10.5px;
+      opacity: 0.75;
+      margin-bottom: 3px;
+      font-weight: 600;
+    }
+
+    .pdf-chip {
+      margin-top: 6px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: rgba(255,255,255,0.2);
+      border: 1px solid rgba(255,255,255,0.35);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 12.5px;
+    }
+    .msg.theirs .pdf-chip {
+      background: #eff6ff;
+      border-color: #bfdbfe;
+      color: var(--primary-dark);
+    }
+
+    .staged-bar {
+      padding: 6px 14px;
+      background: #dbeafe;
+      color: #1e40af;
+      font-size: 12px;
+      display: none;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .composer {
+      padding: 12px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      gap: 8px;
+      background: white;
+    }
+    .composer input[type="text"] {
+      flex: 1;
+      padding: 9px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      outline: none;
+      font-size: 13.5px;
+    }
+    .icon-btn {
+      padding: 8px 11px;
+      background: #f1f5f9;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+    .send-btn {
+      padding: 9px 16px;
+      background: var(--primary);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .send-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    /* Live PDF Viewer Panel */
+    .pdf-panel {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .pdf-header {
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13.5px;
+      font-weight: 600;
+    }
+    .pdf-header a {
+      font-size: 12px;
+      color: var(--primary);
+      text-decoration: none;
+    }
+    .pdf-placeholder {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      font-size: 14px;
+      padding: 24px;
+      text-align: center;
+    }
+    iframe#pdfFrame {
+      flex: 1;
+      width: 100%;
+      border: none;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Hidden audio element for remote voice playback -->
+  <audio id="remoteAudio" autoplay playsinline></audio>
+
+  <!-- Simulation Controls -->
+  <div class="sim-bar">
+    <strong>PORTAL TESTER:</strong>
+    <label>Login Role:
+      <select id="roleSelect" onchange="syncDefaultName()">
+        <option value="student">Student</option>
+        <option value="tutor">Tutor</option>
+      </select>
+    </label>
+    <label>Display Name:
+      <input type="text" id="nameInput" value="Neev" size="12" />
+    </label>
+    <label>Student Login ID:
+      <input type="text" id="roomInput" value="neev_101" size="10" />
+    </label>
+    <button onclick="startSession()">Start Session</button>
+  </div>
+
+  <div class="workspace">
+    <!-- Left: Live Voice + Session Chat -->
+    <div class="chat-panel">
+      <div class="chat-header">
+        <div>
+          <h3 id="panelTitle">Session Chat</h3>
+          <small id="panelSub" style="opacity:0.85;">Voice, chat & session PDFs</small>
+        </div>
+        <div class="header-actions">
+          <button class="call-start-btn" id="callBtn" onclick="startVoiceCall()" disabled>📞 Call</button>
+          <span class="badge" id="statusBadge">Offline</span>
+        </div>
+      </div>
+
+      <!-- Call Status & Controls Strip -->
+      <div class="call-bar" id="callBar">
+        <span id="callStatusText">📞 Voice Call Active</span>
+        <div class="call-controls" id="callControls"></div>
+      </div>
+
+      <div class="messages" id="messages">
+        <div class="sys-msg">Select a role above and click "Start Session" in two tabs to test.</div>
+      </div>
+
+      <div class="staged-bar" id="stagedBar">
+        <span id="stagedName"></span>
+        <span style="cursor:pointer;font-weight:700;" onclick="clearStaged()">✕</span>
+      </div>
+
+      <div class="composer">
+        <label class="icon-btn" title="Attach PDF Assignment">
+          📎 PDF
+          <input type="file" id="pdfInput" accept="application/pdf" hidden onchange="stagePdf()" />
+        </label>
+        <input type="text" id="msgInput" placeholder="Type message..." onkeypress="if(event.key==='Enter') sendMsg()" />
+        <button class="send-btn" id="sendBtn" onclick="sendMsg()" disabled>Send</button>
+      </div>
+    </div>
+
+    <!-- Right: Session Assignment Viewer -->
+    <div class="pdf-panel">
+      <div class="pdf-header">
+        <span id="viewerTitle">📄 Active Session Assignment Viewer</span>
+        <a id="downloadLink" href="#" style="display:none;">Download Copy ↓</a>
+      </div>
+      <div class="pdf-placeholder" id="pdfPlaceholder">
+        <div>No PDF shared yet in this session.</div>
+        <small style="margin-top:6px;">Start a voice call and share a PDF worksheet to discuss it live.</small>
+      </div>
+      <iframe id="pdfFrame"></iframe>
+    </div>
+  </div>
+
+<script>
+  let peer = null;
+  let dataConn = null;
+  let activeCall = null;
+  let incomingCall = null;
+  let localStream = null;
+  let isMuted = false;
+  let retryTimer = null;
+  let remotePeerId = null;
+  let currentConfig = {};
+
+  function syncDefaultName() {
+    const role = document.getElementById('roleSelect').value;
+    document.getElementById('nameInput').value = role === 'tutor' ? 'Saksham V.' : 'Neev';
+  }
+
+  function startSession() {
+    if (retryTimer) clearInterval(retryTimer);
+    endVoiceCall(true);
+    if (dataConn) dataConn.close();
+    if (peer) peer.destroy();
+
+    const role = document.getElementById('roleSelect').value;
+    const name = document.getElementById('nameInput').value.trim() || role;
+    const studentId = document.getElementById('roomInput').value.trim().replace(/[^a-zA-Z0-9_-]/g, '');
+
+    currentConfig = { role, name, studentId };
+    document.getElementById('panelTitle').innerText = `${name} (${role.toUpperCase()})`;
+    document.getElementById('panelSub').innerText = `Room: ${studentId}`;
+    document.getElementById('messages').innerHTML = '';
+
+    const studentHostId = `svir_live_room_${studentId}`;
+
+    if (role === 'student') {
+      setBadge('Waiting...', '#d97706');
+      peer = new Peer(studentHostId);
+
+      peer.on('open', () => {
+        addSysMsg('Student logged in. Waiting for Tutor...');
+      });
+
+      peer.on('connection', (incomingConn) => {
+        remotePeerId = incomingConn.peer;
+        bindDataConnection(incomingConn);
+      });
+
+      peer.on('call', (call) => handleIncomingCall(call));
+
+      peer.on('error', (err) => {
+        if (err.type === 'unavailable-id') {
+          addSysMsg('Another tab is already open as Student for this ID.');
+        } else {
+          setBadge('Error', '#dc2626');
+        }
+      });
+
+    } else {
+      setBadge('Connecting...', '#d97706');
+      peer = new Peer();
+
+      peer.on('open', () => {
+        remotePeerId = studentHostId;
+        addSysMsg(`Connecting to student "${studentId}"...`);
+        attemptConnect(studentHostId);
+        retryTimer = setInterval(() => {
+          if (!dataConn || !dataConn.open) attemptConnect(studentHostId);
+        }, 2500);
+      });
+
+      peer.on('call', (call) => handleIncomingCall(call));
+
+      peer.on('error', (err) => {
+        if (err.type !== 'peer-unavailable') setBadge('Error', '#dc2626');
+      });
+    }
+  }
+
+  function attemptConnect(targetId) {
+    const outgoing = peer.connect(targetId, { reliable: true });
+    outgoing.on('open', () => {
+      if (retryTimer) clearInterval(retryTimer);
+      remotePeerId = targetId;
+      bindDataConnection(outgoing);
+    });
+  }
+
+  function bindDataConnection(connection) {
+    dataConn = connection;
+    remotePeerId = connection.peer;
+    setBadge('● Connected', '#16a34a');
+    document.getElementById('sendBtn').disabled = false;
+    document.getElementById('callBtn').disabled = false;
+    addSysMsg('Connected! Chat, PDF sharing, and Voice Call are ready.');
+
+    dataConn.on('data', (payload) => {
+      if (payload.type === 'call-declined') {
+        endVoiceCall(true);
+        addSysMsg('Call was declined.');
+        return;
+      }
+
+      let blobUrl = null;
+      if (payload.pdfBytes) {
+        const blob = new Blob([payload.pdfBytes], { type: 'application/pdf' });
+        blobUrl = URL.createObjectURL(blob);
+        openPdfInViewer(blobUrl, payload.pdfName);
+      }
+      renderMsg({
+        sender: payload.sender,
+        text: payload.text,
+        pdfName: payload.pdfName,
+        pdfUrl: blobUrl,
+        time: payload.time,
+        isMine: false
+      });
+    });
+
+    dataConn.on('close', () => {
+      setBadge('Offline', '#dc2626');
+      document.getElementById('sendBtn').disabled = true;
+      document.getElementById('callBtn').disabled = true;
+      endVoiceCall(true);
+      addSysMsg('Other user disconnected.');
+    });
+  }
+
+  // =========================================================
+  // TWO-WAY LIVE VOICE CALLING (WebRTC Audio)
+  // =========================================================
+  async function getMicStream() {
+    return await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      video: false
+    });
+  }
+
+  async function startVoiceCall() {
+    if (!peer || !remotePeerId || activeCall) return;
+
+    try {
+      localStream = await getMicStream();
+    } catch (err) {
+      alert('Microphone permission is required for voice calling: ' + err.message);
+      return;
+    }
+
+    document.getElementById('callBtn').disabled = true;
+    showCallBar('ringing', 'Calling...', `
+      <button class="btn-sm btn-end" onclick="endVoiceCall()">Cancel</button>
+    `);
+
+    const call = peer.call(remotePeerId, localStream);
+    bindMediaCall(call);
+    addSysMsg('Outgoing voice call started...');
+  }
+
+  function handleIncomingCall(call) {
+    incomingCall = call;
+    document.getElementById('callBtn').disabled = true;
+    showCallBar('ringing', '📲 Incoming Voice Call...', `
+      <button class="btn-sm btn-accept" onclick="acceptVoiceCall()">Accept</button>
+      <button class="btn-sm btn-end" onclick="declineVoiceCall()">Decline</button>
+    `);
+  }
+
+  async function acceptVoiceCall() {
+    if (!incomingCall) return;
+    try {
+      localStream = await getMicStream();
+    } catch (err) {
+      alert('Microphone access denied: ' + err.message);
+      declineVoiceCall();
+      return;
+    }
+
+    incomingCall.answer(localStream);
+    bindMediaCall(incomingCall);
+    incomingCall = null;
+    addSysMsg('Voice call connected.');
+  }
+
+  function declineVoiceCall() {
+    if (incomingCall) {
+      incomingCall.close();
+      incomingCall = null;
+    }
+    if (dataConn && dataConn.open) {
+      dataConn.send({ type: 'call-declined' });
+    }
+    hideCallBar();
+    document.getElementById('callBtn').disabled = !(dataConn && dataConn.open);
+  }
+
+  function bindMediaCall(call) {
+    activeCall = call;
+    isMuted = false;
+
+    call.on('stream', (remoteStream) => {
+      const audioEl = document.getElementById('remoteAudio');
+      audioEl.srcObject = remoteStream;
+      showCallBar('active', '🎙️ Voice Call Live', `
+        <button class="btn-sm btn-mute" id="muteBtn" onclick="toggleMute()">Mute</button>
+        <button class="btn-sm btn-end" onclick="endVoiceCall()">End Call</button>
+      `);
+    });
+
+    call.on('close', () => {
+      endVoiceCall(true);
+      addSysMsg('Voice call ended.');
+    });
+
+    call.on('error', () => {
+      endVoiceCall(true);
+    });
+  }
+
+  function toggleMute() {
+    if (!localStream) return;
+    isMuted = !isMuted;
+    localStream.getAudioTracks().forEach(track => track.enabled = !isMuted);
+    const btn = document.getElementById('muteBtn');
+    if (btn) {
+      btn.innerText = isMuted ? 'Unmute' : 'Mute';
+      btn.classList.toggle('muted', isMuted);
+    }
+  }
+
+  function endVoiceCall(silent = false) {
+    if (activeCall) {
+      activeCall.close();
+      activeCall = null;
+    }
+    if (incomingCall) {
+      incomingCall.close();
+      incomingCall = null;
+    }
+    if (localStream) {
+      localStream.getTracks().forEach(t => t.stop());
+      localStream = null;
+    }
+    const audioEl = document.getElementById('remoteAudio');
+    if (audioEl) audioEl.srcObject = null;
+
+    hideCallBar();
+    document.getElementById('callBtn').disabled = !(dataConn && dataConn.open);
+    if (!silent) addSysMsg('You ended the call.');
+  }
+
+  function showCallBar(stateClass, text, controlsHtml) {
+    const bar = document.getElementById('callBar');
+    bar.className = `call-bar ${stateClass}`;
+    bar.style.display = 'flex';
+    document.getElementById('callStatusText').innerText = text;
+    document.getElementById('callControls').innerHTML = controlsHtml;
+  }
+
+  function hideCallBar() {
+    document.getElementById('callBar').style.display = 'none';
+  }
+
+  // =========================================================
+  // CHAT & EPHEMERAL PDF SHARING
+  // =========================================================
+  function stagePdf() {
+    const file = document.getElementById('pdfInput').files[0];
+    if (!file) return;
+    document.getElementById('stagedBar').style.display = 'flex';
+    document.getElementById('stagedName').innerText = `📎 ${file.name} (${(file.size/1024).toFixed(1)} KB)`;
+  }
+
+  function clearStaged() {
+    document.getElementById('pdfInput').value = '';
+    document.getElementById('stagedBar').style.display = 'none';
+  }
+
+  async function sendMsg() {
+    if (!dataConn || !dataConn.open) return;
+
+    const input = document.getElementById('msgInput');
+    const fileInput = document.getElementById('pdfInput');
+    const text = input.value.trim();
+    const file = fileInput.files[0];
+
+    if (!text && !file) return;
+
+    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    let pdfBytes = null;
+    let pdfName = null;
+    let localUrl = null;
+
+    if (file) {
+      pdfBytes = await file.arrayBuffer();
+      pdfName = file.name;
+      localUrl = URL.createObjectURL(file);
+      openPdfInViewer(localUrl, pdfName);
+    }
+
+    dataConn.send({
+      type: 'chat',
+      sender: currentConfig.name,
+      text,
+      pdfName,
+      pdfBytes,
+      time
+    });
+
+    renderMsg({
+      sender: currentConfig.name,
+      text,
+      pdfName,
+      pdfUrl: localUrl,
+      time,
+      isMine: true
+    });
+
+    input.value = '';
+    clearStaged();
+  }
+
+  function openPdfInViewer(url, name) {
+    document.getElementById('pdfPlaceholder').style.display = 'none';
+    const frame = document.getElementById('pdfFrame');
+    frame.style.display = 'block';
+    frame.src = url;
+
+    document.getElementById('viewerTitle').innerText = `📄 ${name}`;
+    const dl = document.getElementById('downloadLink');
+    dl.style.display = 'inline';
+    dl.href = url;
+    dl.download = name;
+  }
+
+  function renderMsg({ sender, text, pdfName, pdfUrl, time, isMine }) {
+    const box = document.getElementById('messages');
+    const el = document.createElement('div');
+    el.className = `msg ${isMine ? 'mine' : 'theirs'}`;
+
+    let html = `<div class="meta">${escapeHtml(sender)} • ${time}</div>`;
+    if (text) html += `<div>${escapeHtml(text)}</div>`;
+    if (pdfUrl) {
+      html += `
+        <div class="pdf-chip" onclick="openPdfInViewer('${pdfUrl}', '${escapeHtml(pdfName)}')">
+          <span>📄 ${escapeHtml(pdfName)}</span>
+          <span>View →</span>
+        </div>`;
+    }
+
+    el.innerHTML = html;
+    box.appendChild(el);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function addSysMsg(text) {
+    const box = document.getElementById('messages');
+    const el = document.createElement('div');
+    el.className = 'sys-msg';
+    el.innerText = text;
+    box.appendChild(el);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function setBadge(text, bg) {
+    const b = document.getElementById('statusBadge');
+    b.innerText = text;
+    b.style.background = bg;
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+</script>
+</body>
+</html>
