@@ -3,8 +3,10 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Portal Live Session — Voice, Chat, PDF & Auto-Record</title>
+  <title>Portal Live Session — Voice, Chat, Live Collaborative PDF</title>
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <!-- PDF.js for rendering PDF pages onto a canvas so we can draw over them -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <style>
     :root {
       --primary: #2563eb;
@@ -31,7 +33,7 @@
     .sim-bar {
       background: #0f172a;
       color: #f8fafc;
-      padding: 10px 20px;
+      padding: 9px 18px;
       display: flex;
       flex-wrap: wrap;
       gap: 12px;
@@ -62,7 +64,7 @@
     .rec-setup-bar {
       background: #fefce8;
       border-bottom: 1px solid #fde047;
-      padding: 8px 20px;
+      padding: 7px 18px;
       display: none;
       justify-content: space-between;
       align-items: center;
@@ -83,14 +85,14 @@
     .workspace {
       flex: 1;
       display: grid;
-      grid-template-columns: 440px 1fr;
-      gap: 16px;
-      padding: 16px;
+      grid-template-columns: 390px 1fr;
+      gap: 14px;
+      padding: 14px;
       overflow: hidden;
     }
     @media (max-width: 900px) {
-      .workspace { grid-template-columns: 1fr; }
-      .pdf-panel { display: none; }
+      .workspace { grid-template-columns: 1fr; overflow-y: auto; }
+      .pdf-panel { min-height: 70vh; }
     }
 
     /* Chat & Call Panel */
@@ -105,7 +107,7 @@
     }
 
     .chat-header {
-      padding: 14px 16px;
+      padding: 13px 15px;
       background: var(--primary);
       color: white;
       display: flex;
@@ -113,22 +115,22 @@
       align-items: center;
       gap: 8px;
     }
-    .chat-header h3 { margin: 0; font-size: 15px; }
+    .chat-header h3 { margin: 0; font-size: 14.5px; }
     .header-actions {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 7px;
     }
     .badge {
       font-size: 11px;
-      padding: 4px 9px;
+      padding: 4px 8px;
       border-radius: 999px;
       background: rgba(255,255,255,0.2);
       font-weight: 600;
       white-space: nowrap;
     }
     .call-start-btn {
-      padding: 6px 11px;
+      padding: 6px 10px;
       background: var(--green);
       color: white;
       border: none;
@@ -140,16 +142,16 @@
     }
     .call-start-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
-    /* Active / Incoming Call Strip */
+    /* Call Strip */
     .call-bar {
-      padding: 10px 14px;
+      padding: 9px 14px;
       background: #0f172a;
       color: white;
       display: none;
       justify-content: space-between;
       align-items: center;
       gap: 10px;
-      font-size: 13px;
+      font-size: 12.5px;
     }
     .call-bar.ringing { background: #1e3a8a; }
     .call-bar.active { background: #064e3b; }
@@ -180,27 +182,27 @@
 
     .messages {
       flex: 1;
-      padding: 16px;
+      padding: 14px;
       overflow-y: auto;
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 9px;
       background: #f8fafc;
     }
 
     .sys-msg {
       align-self: center;
-      font-size: 11.5px;
+      font-size: 11px;
       color: var(--muted);
       background: #e2e8f0;
-      padding: 4px 12px;
+      padding: 4px 11px;
       border-radius: 999px;
       text-align: center;
     }
 
     .msg {
-      max-width: 82%;
-      padding: 10px 13px;
+      max-width: 84%;
+      padding: 9px 12px;
       border-radius: 12px;
       font-size: 13.5px;
       line-height: 1.4;
@@ -257,31 +259,31 @@
     }
 
     .composer {
-      padding: 12px;
+      padding: 11px;
       border-top: 1px solid var(--border);
       display: flex;
-      gap: 8px;
+      gap: 7px;
       background: white;
     }
     .composer input[type="text"] {
       flex: 1;
-      padding: 9px 12px;
+      padding: 8px 11px;
       border: 1px solid var(--border);
       border-radius: 8px;
       outline: none;
       font-size: 13.5px;
     }
     .icon-btn {
-      padding: 8px 11px;
+      padding: 8px 10px;
       background: #f1f5f9;
       border: 1px solid var(--border);
       border-radius: 8px;
       cursor: pointer;
-      font-size: 13px;
+      font-size: 12.5px;
       white-space: nowrap;
     }
     .send-btn {
-      padding: 9px 16px;
+      padding: 8px 14px;
       background: var(--primary);
       color: white;
       border: none;
@@ -291,7 +293,9 @@
     }
     .send-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
-    /* Live PDF Viewer Panel */
+    /* =========================================================
+       COLLABORATIVE LIVE PDF WHITEBOARD PANEL
+       ========================================================= */
     .pdf-panel {
       background: var(--card);
       border: 1px solid var(--border);
@@ -300,36 +304,96 @@
       flex-direction: column;
       overflow: hidden;
     }
-    .pdf-header {
-      padding: 12px 18px;
+
+    .pdf-toolbar {
+      padding: 9px 14px;
       border-bottom: 1px solid var(--border);
+      background: #f8fafc;
       display: flex;
+      flex-wrap: wrap;
       justify-content: space-between;
       align-items: center;
-      font-size: 13.5px;
-      font-weight: 600;
+      gap: 8px;
     }
-    .pdf-header a {
+
+    .toolbar-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .tool-btn {
+      padding: 5px 10px;
+      border: 1px solid var(--border);
+      background: white;
+      border-radius: 6px;
       font-size: 12px;
-      color: var(--primary);
-      text-decoration: none;
+      font-weight: 600;
+      cursor: pointer;
+      color: var(--text);
     }
-    .pdf-placeholder {
+    .tool-btn:hover { background: #f1f5f9; }
+    .tool-btn.active {
+      background: var(--primary);
+      color: white;
+      border-color: var(--primary);
+    }
+
+    .color-swatch {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      border: 2px solid white;
+      box-shadow: 0 0 0 1px #94a3b8;
+      cursor: pointer;
+    }
+    .color-swatch.active {
+      box-shadow: 0 0 0 2px #0f172a;
+      transform: scale(1.12);
+    }
+
+    .board-viewport {
       flex: 1;
+      overflow: auto;
+      background: #cbd5e1;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding: 20px;
+      position: relative;
+    }
+
+    .pdf-placeholder {
+      margin: auto;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      color: var(--muted);
+      color: #475569;
       font-size: 14px;
-      padding: 24px;
       text-align: center;
+      background: white;
+      padding: 32px;
+      border-radius: 12px;
+      border: 1px dashed #94a3b8;
     }
-    iframe#pdfFrame {
-      flex: 1;
-      width: 100%;
-      border: none;
+
+    /* Layered Canvas Stack: PDF underneath, Live Ink on top */
+    .canvas-stack {
+      position: relative;
       display: none;
+      box-shadow: 0 8px 25px rgba(0,0,0,0.18);
+      background: white;
+    }
+    #pdfCanvas {
+      display: block;
+    }
+    #inkCanvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      cursor: crosshair;
+      touch-action: none; /* Smooth stylus & touch drawing without scrolling */
     }
   </style>
 </head>
@@ -372,7 +436,7 @@
       <div class="chat-header">
         <div>
           <h3 id="panelTitle">Session Chat</h3>
-          <small id="panelSub" style="opacity:0.85;">Voice, chat & session PDFs</small>
+          <small id="panelSub" style="opacity:0.85;">Voice, chat & live PDF board</small>
         </div>
         <div class="header-actions">
           <button class="call-start-btn" id="callBtn" onclick="startVoiceCall()" disabled>📞 Call</button>
@@ -380,7 +444,6 @@
         </div>
       </div>
 
-      <!-- Call Status & Controls Strip -->
       <div class="call-bar" id="callBar">
         <span id="callStatusText">📞 Voice Call Active</span>
         <div class="call-controls" id="callControls"></div>
@@ -396,7 +459,7 @@
       </div>
 
       <div class="composer">
-        <label class="icon-btn" title="Attach PDF Assignment">
+        <label class="icon-btn" title="Attach & Open PDF on Both Screens">
           📎 PDF
           <input type="file" id="pdfInput" accept="application/pdf" hidden onchange="stagePdf()" />
         </label>
@@ -405,21 +468,54 @@
       </div>
     </div>
 
-    <!-- Right: Session Assignment Viewer -->
+    <!-- Right: Synchronized Interactive PDF & Live Ink Board -->
     <div class="pdf-panel">
-      <div class="pdf-header">
-        <span id="viewerTitle">📄 Active Session Assignment Viewer</span>
-        <a id="downloadLink" href="#" style="display:none;">Download Copy ↓</a>
+      <div class="pdf-toolbar">
+        <div class="toolbar-group">
+          <span id="viewerTitle" style="font-size:13px;font-weight:700;">📄 Live PDF Board</span>
+        </div>
+
+        <!-- Drawing Tools -->
+        <div class="toolbar-group" id="drawControls" style="display:none;">
+          <button class="tool-btn active" id="toolPen" onclick="setTool('pen')">✏️ Pen</button>
+          <button class="tool-btn" id="toolHighlighter" onclick="setTool('highlighter')">🖍️ Highlight</button>
+          <button class="tool-btn" id="toolEraser" onclick="setTool('eraser')">🧹 Eraser</button>
+
+          <div class="color-swatch active" style="background:#ef4444;" onclick="setColor('#ef4444', this)" title="Red"></div>
+          <div class="color-swatch" style="background:#2563eb;" onclick="setColor('#2563eb', this)" title="Blue"></div>
+          <div class="color-swatch" style="background:#16a34a;" onclick="setColor('#16a34a', this)" title="Green"></div>
+          <div class="color-swatch" style="background:#0f172a;" onclick="setColor('#0f172a', this)" title="Black"></div>
+
+          <button class="tool-btn" onclick="clearCurrentPage(true)">Clear Page</button>
+        </div>
+
+        <!-- Page Navigation & Export -->
+        <div class="toolbar-group" id="pageControls" style="display:none;">
+          <button class="tool-btn" onclick="changePage(-1)">◀</button>
+          <span id="pageIndicator" style="font-size:12px;font-weight:600;min-width:65px;text-align:center;">1 / 1</span>
+          <button class="tool-btn" onclick="changePage(1)">▶</button>
+          <button class="tool-btn" style="background:#eff6ff;color:#1d4ed8;" onclick="downloadAnnotatedPage()">💾 Save Page</button>
+        </div>
       </div>
-      <div class="pdf-placeholder" id="pdfPlaceholder">
-        <div>No PDF shared yet in this session.</div>
-        <small style="margin-top:6px;">Start a voice call and share a PDF worksheet to discuss it live.</small>
+
+      <div class="board-viewport">
+        <div class="pdf-placeholder" id="pdfPlaceholder">
+          <div style="font-weight:600;margin-bottom:6px;">No PDF opened yet</div>
+          <small>Attach a PDF in chat—it will open simultaneously for both you and your student so you can write on it together in real time.</small>
+        </div>
+
+        <div class="canvas-stack" id="canvasStack">
+          <canvas id="pdfCanvas"></canvas>
+          <canvas id="inkCanvas"></canvas>
+        </div>
       </div>
-      <iframe id="pdfFrame"></iframe>
     </div>
   </div>
 
 <script>
+  // Configure PDF.js worker
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
   let peer = null;
   let dataConn = null;
   let activeCall = null;
@@ -436,6 +532,21 @@
   let recordedChunks = [];
   let mixerAudioCtx = null;
   let hiddenAudioSink = null;
+
+  // =========================================================
+  // COLLABORATIVE PDF + LIVE INK STATE
+  // =========================================================
+  const pdfStore = {};       // id -> { name, bytes }
+  let activePdfId = null;
+  let pdfDoc = null;
+  let currentPageNum = 1;
+  let totalPages = 1;
+  let pageStrokes = {};      // { [pdfId]: { [pageNum]: Array<Stroke> } }
+
+  let currentTool = 'pen';
+  let currentColor = '#ef4444';
+  let isDrawing = false;
+  let activeStroke = null;
 
   function syncDefaultName() {
     const role = document.getElementById('roleSelect').value;
@@ -457,9 +568,7 @@
       document.getElementById('folderStatus').innerText =
         `✅ Auto-Saving Recordings to Folder: "${recordingsDirHandle.name}"`;
     } catch (err) {
-      if (err.name !== 'AbortError') {
-        addSysMsg('⚠️ Folder error: ' + err.message);
-      }
+      if (err.name !== 'AbortError') addSysMsg('⚠️ Folder error: ' + err.message);
     }
   }
 
@@ -534,26 +643,57 @@
     setBadge('● Connected', '#16a34a');
     document.getElementById('sendBtn').disabled = false;
     document.getElementById('callBtn').disabled = false;
-    addSysMsg('Connected! Chat, PDF sharing, and Voice Call are ready.');
+    addSysMsg('Connected! Chat, Live PDF Annotation, and Voice Call are ready.');
 
-    dataConn.on('data', (payload) => {
+    dataConn.on('data', async (payload) => {
       if (payload.type === 'call-declined') {
         endVoiceCall(true);
         addSysMsg('Call was declined.');
         return;
       }
 
-      let blobUrl = null;
-      if (payload.pdfBytes) {
-        const blob = new Blob([payload.pdfBytes], { type: 'application/pdf' });
-        blobUrl = URL.createObjectURL(blob);
-        openPdfInViewer(blobUrl, payload.pdfName);
+      // Remote user opened/switched PDF or page -> sync immediately
+      if (payload.type === 'pdf-sync') {
+        if (pdfStore[payload.pdfId]) {
+          await loadPdfDocument(payload.pdfId, payload.pageNum || 1, false);
+        }
+        return;
       }
+
+      // Remote user drew a stroke live -> render immediately
+      if (payload.type === 'ink-stroke') {
+        recordStroke(payload.pdfId, payload.pageNum, payload.stroke);
+        if (payload.pdfId === activePdfId && payload.pageNum === currentPageNum) {
+          redrawInkCanvas();
+        }
+        return;
+      }
+
+      // Remote user cleared page
+      if (payload.type === 'ink-clear') {
+        if (pageStrokes[payload.pdfId]) {
+          pageStrokes[payload.pdfId][payload.pageNum] = [];
+        }
+        if (payload.pdfId === activePdfId && payload.pageNum === currentPageNum) {
+          redrawInkCanvas();
+        }
+        return;
+      }
+
+      // Standard Chat + Optional PDF Attachment
+      let pdfId = null;
+      if (payload.pdfBytes) {
+        pdfId = payload.pdfId;
+        pdfStore[pdfId] = { name: payload.pdfName, bytes: payload.pdfBytes };
+        // Auto-open simultaneously when received
+        await loadPdfDocument(pdfId, 1, false);
+      }
+
       renderMsg({
         sender: payload.sender,
         text: payload.text,
         pdfName: payload.pdfName,
-        pdfUrl: blobUrl,
+        pdfId: pdfId,
         time: payload.time,
         isMine: false
       });
@@ -566,6 +706,234 @@
       endVoiceCall(true);
       addSysMsg('Other user disconnected.');
     });
+  }
+
+  // =========================================================
+  // PDF.JS RENDERER & SYNCHRONIZED PAGE NAVIGATION
+  // =========================================================
+  async function openSharedPdf(pdfId, pageNum = 1) {
+    await loadPdfDocument(pdfId, pageNum, true);
+  }
+
+  async function loadPdfDocument(pdfId, pageNum = 1, broadcast = false) {
+    const entry = pdfStore[pdfId];
+    if (!entry) return;
+
+    const isNewDoc = activePdfId !== pdfId;
+    activePdfId = pdfId;
+
+    if (isNewDoc || !pdfDoc) {
+      // Clone buffer because PDF.js transfers ownership to its worker
+      const copy = entry.bytes.slice(0);
+      pdfDoc = await pdfjsLib.getDocument({ data: copy }).promise;
+      totalPages = pdfDoc.numPages;
+    }
+
+    currentPageNum = Math.max(1, Math.min(pageNum, totalPages));
+
+    document.getElementById('pdfPlaceholder').style.display = 'none';
+    document.getElementById('canvasStack').style.display = 'inline-block';
+    document.getElementById('drawControls').style.display = 'flex';
+    document.getElementById('pageControls').style.display = 'flex';
+    document.getElementById('viewerTitle').innerText = `📄 ${entry.name}`;
+    document.getElementById('pageIndicator').innerText = `${currentPageNum} / ${totalPages}`;
+
+    await renderCurrentPdfPage();
+
+    if (broadcast && dataConn && dataConn.open) {
+      dataConn.send({ type: 'pdf-sync', pdfId, pageNum: currentPageNum });
+    }
+  }
+
+  async function renderCurrentPdfPage() {
+    if (!pdfDoc) return;
+    const page = await pdfDoc.getPage(currentPageNum);
+
+    // Fit cleanly inside the right panel width while staying sharp
+    const viewportContainer = document.querySelector('.board-viewport');
+    const availableWidth = Math.max(520, viewportContainer.clientWidth - 48);
+    const unscaledViewport = page.getViewport({ scale: 1 });
+    const scale = Math.min(1.6, availableWidth / unscaledViewport.width);
+    const viewport = page.getViewport({ scale });
+
+    const pdfCanvas = document.getElementById('pdfCanvas');
+    const inkCanvas = document.getElementById('inkCanvas');
+    const stack = document.getElementById('canvasStack');
+
+    pdfCanvas.width = viewport.width;
+    pdfCanvas.height = viewport.height;
+    inkCanvas.width = viewport.width;
+    inkCanvas.height = viewport.height;
+    stack.style.width = `${viewport.width}px`;
+    stack.style.height = `${viewport.height}px`;
+
+    const ctx = pdfCanvas.getContext('2d');
+    await page.render({ canvasContext: ctx, viewport }).promise;
+
+    redrawInkCanvas();
+  }
+
+  function changePage(delta) {
+    if (!pdfDoc || !activePdfId) return;
+    const next = currentPageNum + delta;
+    if (next < 1 || next > totalPages) return;
+    loadPdfDocument(activePdfId, next, true);
+  }
+
+  // =========================================================
+  // LIVE SYNCHRONIZED DRAWING (NORMALIZED COORDINATES)
+  // =========================================================
+  function setTool(tool) {
+    currentTool = tool;
+    document.querySelectorAll('#drawControls .tool-btn').forEach(b => b.classList.remove('active'));
+    const map = { pen: 'toolPen', highlighter: 'toolHighlighter', eraser: 'toolEraser' };
+    if (map[tool]) document.getElementById(map[tool]).classList.add('active');
+  }
+
+  function setColor(hex, el) {
+    currentColor = hex;
+    if (currentTool === 'eraser') setTool('pen');
+    document.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('active'));
+    if (el) el.classList.add('active');
+  }
+
+  function recordStroke(pdfId, pageNum, stroke) {
+    if (!pageStrokes[pdfId]) pageStrokes[pdfId] = {};
+    if (!pageStrokes[pdfId][pageNum]) pageStrokes[pdfId][pageNum] = [];
+    pageStrokes[pdfId][pageNum].push(stroke);
+  }
+
+  function clearCurrentPage(broadcast = false) {
+    if (!activePdfId) return;
+    if (!pageStrokes[activePdfId]) pageStrokes[activePdfId] = {};
+    pageStrokes[activePdfId][currentPageNum] = [];
+    redrawInkCanvas();
+
+    if (broadcast && dataConn && dataConn.open) {
+      dataConn.send({ type: 'ink-clear', pdfId: activePdfId, pageNum: currentPageNum });
+    }
+  }
+
+  function redrawInkCanvas() {
+    const canvas = document.getElementById('inkCanvas');
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const strokes = (pageStrokes[activePdfId] && pageStrokes[activePdfId][currentPageNum]) || [];
+    for (const s of strokes) {
+      drawStrokeOnContext(ctx, s, canvas.width, canvas.height);
+    }
+    if (activeStroke) {
+      drawStrokeOnContext(ctx, activeStroke, canvas.width, canvas.height);
+    }
+  }
+
+  function drawStrokeOnContext(ctx, stroke, w, h) {
+    if (!stroke.points || stroke.points.length < 1) return;
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    if (stroke.tool === 'eraser') {
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.lineWidth = 22;
+      ctx.strokeStyle = 'rgba(0,0,0,1)';
+    } else if (stroke.tool === 'highlighter') {
+      ctx.globalCompositeOperation = 'multiply';
+      ctx.globalAlpha = 0.35;
+      ctx.lineWidth = 16;
+      ctx.strokeStyle = stroke.color;
+    } else {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.lineWidth = 2.6;
+      ctx.strokeStyle = stroke.color;
+    }
+
+    ctx.beginPath();
+    const p0 = stroke.points[0];
+    ctx.moveTo(p0.x * w, p0.y * h);
+    for (let i = 1; i < stroke.points.length; i++) {
+      ctx.lineTo(stroke.points[i].x * w, stroke.points[i].y * h);
+    }
+    if (stroke.points.length === 1) {
+      ctx.lineTo(p0.x * w + 0.1, p0.y * h + 0.1);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Pointer event listeners for Mouse, Touch, and Stylus
+  const inkCanvasEl = document.getElementById('inkCanvas');
+
+  function getNormalizedPoint(e) {
+    const rect = inkCanvasEl.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
+      y: Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height))
+    };
+  }
+
+  inkCanvasEl.addEventListener('pointerdown', (e) => {
+    if (!activePdfId) return;
+    inkCanvasEl.setPointerCapture(e.pointerId);
+    isDrawing = true;
+    activeStroke = {
+      tool: currentTool,
+      color: currentColor,
+      points: [getNormalizedPoint(e)]
+    };
+    redrawInkCanvas();
+  });
+
+  inkCanvasEl.addEventListener('pointermove', (e) => {
+    if (!isDrawing || !activeStroke) return;
+    activeStroke.points.push(getNormalizedPoint(e));
+    redrawInkCanvas();
+  });
+
+  function finishStroke(e) {
+    if (!isDrawing || !activeStroke) return;
+    isDrawing = false;
+    if (e && inkCanvasEl.hasPointerCapture(e.pointerId)) {
+      inkCanvasEl.releasePointerCapture(e.pointerId);
+    }
+
+    recordStroke(activePdfId, currentPageNum, activeStroke);
+
+    if (dataConn && dataConn.open) {
+      dataConn.send({
+        type: 'ink-stroke',
+        pdfId: activePdfId,
+        pageNum: currentPageNum,
+        stroke: activeStroke
+      });
+    }
+
+    activeStroke = null;
+    redrawInkCanvas();
+  }
+
+  inkCanvasEl.addEventListener('pointerup', finishStroke);
+  inkCanvasEl.addEventListener('pointercancel', finishStroke);
+
+  // Merge PDF Layer + Ink Layer into a downloadable image
+  function downloadAnnotatedPage() {
+    if (!activePdfId) return;
+    const pdfCanvas = document.getElementById('pdfCanvas');
+    const inkCanvas = document.getElementById('inkCanvas');
+
+    const merged = document.createElement('canvas');
+    merged.width = pdfCanvas.width;
+    merged.height = pdfCanvas.height;
+    const mCtx = merged.getContext('2d');
+    mCtx.drawImage(pdfCanvas, 0, 0);
+    mCtx.drawImage(inkCanvas, 0, 0);
+
+    const baseName = (pdfStore[activePdfId]?.name || 'Worksheet').replace(/\.pdf$/i, '');
+    const a = document.createElement('a');
+    a.href = merged.toDataURL('image/png');
+    a.download = `${baseName}_Page${currentPageNum}_Annotated.png`;
+    a.click();
   }
 
   // =========================================================
@@ -683,7 +1051,6 @@
 
   function startMixedRecording(micStream, studentStream) {
     try {
-      // Required in Chromium so WebRTC remote tracks produce audio samples
       hiddenAudioSink = new Audio();
       hiddenAudioSink.srcObject = studentStream;
       hiddenAudioSink.muted = true;
@@ -723,7 +1090,6 @@
       };
 
       mediaRecorder.onstop = () => {
-        // Clean up audio hardware ONLY AFTER MediaRecorder has finished stopping
         cleanupAudioHardware();
         saveRecordingFile(mimeType);
       };
@@ -732,7 +1098,6 @@
       addSysMsg(`🔴 Recording active (${mimeType || 'default format'})...`);
     } catch (err) {
       addSysMsg('⚠️ Could not start recording: ' + err.message);
-      console.error('Recording failed:', err);
     }
   }
 
@@ -812,7 +1177,6 @@
     const isRecorderRunning = mediaRecorder && mediaRecorder.state !== 'inactive';
 
     if (isRecorderRunning) {
-      // Stop recorder first; its onstop handler will call cleanupAudioHardware() and saveRecordingFile()
       mediaRecorder.stop();
     } else {
       cleanupAudioHardware();
@@ -872,19 +1236,21 @@
     const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     let pdfBytes = null;
     let pdfName = null;
-    let localUrl = null;
+    let pdfId = null;
 
     if (file) {
       pdfBytes = await file.arrayBuffer();
       pdfName = file.name;
-      localUrl = URL.createObjectURL(file);
-      openPdfInViewer(localUrl, pdfName);
+      pdfId = `pdf_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      pdfStore[pdfId] = { name: pdfName, bytes: pdfBytes };
+      await loadPdfDocument(pdfId, 1, false);
     }
 
     dataConn.send({
       type: 'chat',
       sender: currentConfig.name,
       text,
+      pdfId,
       pdfName,
       pdfBytes,
       time
@@ -894,7 +1260,7 @@
       sender: currentConfig.name,
       text,
       pdfName,
-      pdfUrl: localUrl,
+      pdfId,
       time,
       isMine: true
     });
@@ -903,31 +1269,18 @@
     clearStaged();
   }
 
-  function openPdfInViewer(url, name) {
-    document.getElementById('pdfPlaceholder').style.display = 'none';
-    const frame = document.getElementById('pdfFrame');
-    frame.style.display = 'block';
-    frame.src = url;
-
-    document.getElementById('viewerTitle').innerText = `📄 ${name}`;
-    const dl = document.getElementById('downloadLink');
-    dl.style.display = 'inline';
-    dl.href = url;
-    dl.download = name;
-  }
-
-  function renderMsg({ sender, text, pdfName, pdfUrl, time, isMine }) {
+  function renderMsg({ sender, text, pdfName, pdfId, time, isMine }) {
     const box = document.getElementById('messages');
     const el = document.createElement('div');
     el.className = `msg ${isMine ? 'mine' : 'theirs'}`;
 
     let html = `<div class="meta">${escapeHtml(sender)} • ${time}</div>`;
     if (text) html += `<div>${escapeHtml(text)}</div>`;
-    if (pdfUrl) {
+    if (pdfId) {
       html += `
-        <div class="pdf-chip" onclick="openPdfInViewer('${pdfUrl}', '${escapeHtml(pdfName)}')">
+        <div class="pdf-chip" onclick="openSharedPdf('${pdfId}', 1)">
           <span>📄 ${escapeHtml(pdfName)}</span>
-          <span>View →</span>
+          <span>Open on Both →</span>
         </div>`;
     }
 
