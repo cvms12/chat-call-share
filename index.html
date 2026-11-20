@@ -357,7 +357,7 @@
 
   <!-- Tutor Auto-Save Folder Bar -->
   <div class="rec-setup-bar" id="recSetupBar">
-    <span id="folderStatus">⚠️ Auto-Recording: No local folder selected yet (calls will fallback to browser download).</span>
+    <span id="folderStatus">⚠️ Auto-Recording: No local folder selected yet (will save to Downloads folder).</span>
     <div style="display:flex;gap:8px;align-items:center;">
       <label style="cursor:pointer;">
         <input type="checkbox" id="autoRecordToggle" checked /> Auto-record calls
@@ -430,11 +430,12 @@
   let remotePeerId = null;
   let currentConfig = {};
 
-  // Auto-Recording State (Tutor side)
+  // Auto-Recording State
   let recordingsDirHandle = null;
   let mediaRecorder = null;
   let recordedChunks = [];
   let mixerAudioCtx = null;
+  let hiddenAudioSink = null;
 
   function syncDefaultName() {
     const role = document.getElementById('roleSelect').value;
@@ -442,10 +443,9 @@
     document.getElementById('recSetupBar').style.display = role === 'tutor' ? 'flex' : 'none';
   }
 
-  // Pick a folder on the Tutor's computer once
   async function chooseRecordingFolder() {
     if (!window.showDirectoryPicker) {
-      alert('Your browser does not support direct folder saving (use Chrome or Edge). Recordings will download automatically instead.');
+      alert('Direct folder selection requires Chrome, Edge, or Brave on desktop. Recordings will download to your Downloads folder instead.');
       return;
     }
     try {
@@ -457,7 +457,9 @@
       document.getElementById('folderStatus').innerText =
         `✅ Auto-Saving Recordings to Folder: "${recordingsDirHandle.name}"`;
     } catch (err) {
-      if (err.name !== 'AbortError') console.error(err);
+      if (err.name !== 'AbortError') {
+        addSysMsg('⚠️ Folder error: ' + err.message);
+      }
     }
   }
 
@@ -567,13 +569,23 @@
   }
 
   // =========================================================
-  // TWO-WAY VOICE CALL + AUTOMATIC TWO-TRACK RECORDING
+  // TWO-WAY VOICE CALL + FIXED TWO-TRACK RECORDING
   // =========================================================
   async function getMicStream() {
     return await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       video: false
     });
+  }
+
+  function getSupportedMimeType() {
+    const types = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/ogg;codecs=opus',
+      'audio/mp4'
+    ];
+    return types.find(t => MediaRecorder.isTypeSupported(t)) || '';
   }
 
   async function startVoiceCall() {
@@ -644,7 +656,7 @@
         currentConfig.role === 'tutor' &&
         document.getElementById('autoRecordToggle').checked;
 
-      if (shouldAutoRecord) {
+      if (shouldAutoRecord && (!mediaRecorder || mediaRecorder.state === 'inactive')) {
         startMixedRecording(localStream, remoteStream);
       }
 
@@ -663,63 +675,100 @@
       addSysMsg('Voice call ended.');
     });
 
-    call.on('error', () => endVoiceCall(true));
+    call.on('error', (err) => {
+      addSysMsg('⚠️ Call error: ' + err.message);
+      endVoiceCall(true);
+    });
   }
 
   function startMixedRecording(micStream, studentStream) {
     try {
-      mixerAudioCtx = new AudioContext();
+      // Required in Chromium so WebRTC remote tracks produce audio samples
+      hiddenAudioSink = new Audio();
+      hiddenAudioSink.srcObject = studentStream;
+      hiddenAudioSink.muted = true;
+      hiddenAudioSink.play().catch(() => {});
+
+      mixerAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (mixerAudioCtx.state === 'suspended') {
+        mixerAudioCtx.resume();
+      }
+
       const destination = mixerAudioCtx.createMediaStreamDestination();
 
-      const micSource = mixerAudioCtx.createMediaStreamSource(micStream);
-      const studentSource = mixerAudioCtx.createMediaStreamSource(studentStream);
+      if (micStream && micStream.getAudioTracks().length > 0) {
+        const micSource = mixerAudioCtx.createMediaStreamSource(micStream);
+        micSource.connect(destination);
+      }
 
-      micSource.connect(destination);
-      studentSource.connect(destination);
+      if (studentStream && studentStream.getAudioTracks().length > 0) {
+        const studentSource = mixerAudioCtx.createMediaStreamSource(studentStream);
+        studentSource.connect(destination);
+      }
+
+      const mimeType = getSupportedMimeType();
+      const options = mimeType ? { mimeType } : {};
 
       recordedChunks = [];
-      mediaRecorder = new MediaRecorder(destination.stream, { mimeType: 'audio/webm' });
+      mediaRecorder = new MediaRecorder(destination.stream, options);
 
       mediaRecorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+        if (e.data && e.data.size > 0) {
+          recordedChunks.push(e.data);
+        }
       };
 
-      mediaRecorder.onstop = () => saveRecordingFile();
-      mediaRecorder.start(1000); // Collect chunks every 1s for safety
-      addSysMsg('🔴 Auto-recording started (capturing both Tutor & Student audio).');
+      mediaRecorder.onerror = (e) => {
+        addSysMsg('⚠️ Recorder error: ' + (e.error?.message || 'Unknown error'));
+      };
+
+      mediaRecorder.onstop = () => {
+        // Clean up audio hardware ONLY AFTER MediaRecorder has finished stopping
+        cleanupAudioHardware();
+        saveRecordingFile(mimeType);
+      };
+
+      mediaRecorder.start(1000);
+      addSysMsg(`🔴 Recording active (${mimeType || 'default format'})...`);
     } catch (err) {
-      console.error('Recording failed to start:', err);
+      addSysMsg('⚠️ Could not start recording: ' + err.message);
+      console.error('Recording failed:', err);
     }
   }
 
-  async function saveRecordingFile() {
-    if (!recordedChunks.length) return;
+  async function saveRecordingFile(mimeType = 'audio/webm') {
+    if (!recordedChunks.length) {
+      addSysMsg('⚠️ Recording stopped, but 0 bytes of audio were captured.');
+      return;
+    }
 
-    const blob = new Blob(recordedChunks, { type: 'audio/webm' });
+    const blob = new Blob(recordedChunks, { type: mimeType || 'audio/webm' });
     recordedChunks = [];
 
+    const ext = mimeType.includes('mp4') ? 'm4a' : 'webm';
     const now = new Date();
-    const stamp = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}-${String(now.getMinutes()).padStart(2,'0')}`;
-    const filename = `Session_${currentConfig.studentId}_${stamp}.webm`;
+    const stamp = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}-${String(now.getMinutes()).padStart(2,'0')}-${String(now.getSeconds()).padStart(2,'0')}`;
+    const filename = `Session_${currentConfig.studentId}_${stamp}.${ext}`;
 
-    // 1. Write directly into the Tutor's selected folder if granted
     if (recordingsDirHandle) {
       try {
-        const perm = await recordingsDirHandle.requestPermission({ mode: 'readwrite' });
+        let perm = await recordingsDirHandle.queryPermission({ mode: 'readwrite' });
+        if (perm !== 'granted') {
+          perm = await recordingsDirHandle.requestPermission({ mode: 'readwrite' });
+        }
         if (perm === 'granted') {
           const fileHandle = await recordingsDirHandle.getFileHandle(filename, { create: true });
           const writable = await fileHandle.createWritable();
           await writable.write(blob);
           await writable.close();
-          addSysMsg(`💾 Saved automatically: ${recordingsDirHandle.name}/${filename}`);
+          addSysMsg(`💾 Saved (${(blob.size / 1024).toFixed(1)} KB): ${recordingsDirHandle.name}/${filename}`);
           return;
         }
       } catch (err) {
-        console.warn('Direct folder write failed, falling back to download:', err);
+        addSysMsg(`⚠️ Folder write blocked (${err.message}) — downloading instead.`);
       }
     }
 
-    // 2. Fallback: Automatic browser download to Downloads folder
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -728,17 +777,24 @@
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
-    addSysMsg(`💾 Recording downloaded as ${filename}`);
+    addSysMsg(`💾 Downloaded (${(blob.size / 1024).toFixed(1)} KB): ${filename}`);
   }
 
-  function stopRecordingIfActive() {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-      mediaRecorder.stop();
+  function cleanupAudioHardware() {
+    if (hiddenAudioSink) {
+      hiddenAudioSink.srcObject = null;
+      hiddenAudioSink = null;
     }
     if (mixerAudioCtx) {
-      mixerAudioCtx.close();
+      mixerAudioCtx.close().catch(() => {});
       mixerAudioCtx = null;
     }
+    if (localStream) {
+      localStream.getTracks().forEach(t => t.stop());
+      localStream = null;
+    }
+    const audioEl = document.getElementById('remoteAudio');
+    if (audioEl) audioEl.srcObject = null;
   }
 
   function toggleMute() {
@@ -753,7 +809,14 @@
   }
 
   function endVoiceCall(silent = false) {
-    stopRecordingIfActive();
+    const isRecorderRunning = mediaRecorder && mediaRecorder.state !== 'inactive';
+
+    if (isRecorderRunning) {
+      // Stop recorder first; its onstop handler will call cleanupAudioHardware() and saveRecordingFile()
+      mediaRecorder.stop();
+    } else {
+      cleanupAudioHardware();
+    }
 
     if (activeCall) {
       activeCall.close();
@@ -763,12 +826,6 @@
       incomingCall.close();
       incomingCall = null;
     }
-    if (localStream) {
-      localStream.getTracks().forEach(t => t.stop());
-      localStream = null;
-    }
-    const audioEl = document.getElementById('remoteAudio');
-    if (audioEl) audioEl.srcObject = null;
 
     hideCallBar();
     document.getElementById('callBtn').disabled = !(dataConn && dataConn.open);
