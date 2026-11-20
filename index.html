@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Portal Live Session — Voice, Chat & PDF</title>
+  <title>Portal Live Session — Voice, Chat, PDF & Auto-Record</title>
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <style>
     :root {
@@ -58,11 +58,32 @@
     }
     .sim-bar button:hover { background: #7dd3fc; }
 
+    /* Tutor Folder Setup Bar */
+    .rec-setup-bar {
+      background: #fefce8;
+      border-bottom: 1px solid #fde047;
+      padding: 8px 20px;
+      display: none;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12.5px;
+      color: #854d0e;
+    }
+    .rec-setup-bar button {
+      padding: 5px 12px;
+      background: #ca8a04;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
     /* Main Split Workspace */
     .workspace {
       flex: 1;
       display: grid;
-      grid-template-columns: 430px 1fr;
+      grid-template-columns: 440px 1fr;
       gap: 16px;
       padding: 16px;
       overflow: hidden;
@@ -132,7 +153,18 @@
     }
     .call-bar.ringing { background: #1e3a8a; }
     .call-bar.active { background: #064e3b; }
-    .call-controls { display: flex; gap: 6px; }
+    .call-controls { display: flex; gap: 6px; align-items: center; }
+    .rec-dot {
+      display: inline-block;
+      width: 9px;
+      height: 9px;
+      background: #ef4444;
+      border-radius: 50%;
+      margin-right: 5px;
+      animation: blink 1s infinite;
+    }
+    @keyframes blink { 50% { opacity: 0.2; } }
+
     .btn-sm {
       padding: 5px 10px;
       border: none;
@@ -303,7 +335,6 @@
 </head>
 <body>
 
-  <!-- Hidden audio element for remote voice playback -->
   <audio id="remoteAudio" autoplay playsinline></audio>
 
   <!-- Simulation Controls -->
@@ -322,6 +353,17 @@
       <input type="text" id="roomInput" value="neev_101" size="10" />
     </label>
     <button onclick="startSession()">Start Session</button>
+  </div>
+
+  <!-- Tutor Auto-Save Folder Bar -->
+  <div class="rec-setup-bar" id="recSetupBar">
+    <span id="folderStatus">⚠️ Auto-Recording: No local folder selected yet (calls will fallback to browser download).</span>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <label style="cursor:pointer;">
+        <input type="checkbox" id="autoRecordToggle" checked /> Auto-record calls
+      </label>
+      <button onclick="chooseRecordingFolder()">📁 Set Recordings Folder</button>
+    </div>
   </div>
 
   <div class="workspace">
@@ -388,9 +430,35 @@
   let remotePeerId = null;
   let currentConfig = {};
 
+  // Auto-Recording State (Tutor side)
+  let recordingsDirHandle = null;
+  let mediaRecorder = null;
+  let recordedChunks = [];
+  let mixerAudioCtx = null;
+
   function syncDefaultName() {
     const role = document.getElementById('roleSelect').value;
     document.getElementById('nameInput').value = role === 'tutor' ? 'Saksham V.' : 'Neev';
+    document.getElementById('recSetupBar').style.display = role === 'tutor' ? 'flex' : 'none';
+  }
+
+  // Pick a folder on the Tutor's computer once
+  async function chooseRecordingFolder() {
+    if (!window.showDirectoryPicker) {
+      alert('Your browser does not support direct folder saving (use Chrome or Edge). Recordings will download automatically instead.');
+      return;
+    }
+    try {
+      recordingsDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+      const bar = document.getElementById('recSetupBar');
+      bar.style.background = '#ecfdf5';
+      bar.style.borderColor = '#6ee7b7';
+      bar.style.color = '#065f46';
+      document.getElementById('folderStatus').innerText =
+        `✅ Auto-Saving Recordings to Folder: "${recordingsDirHandle.name}"`;
+    } catch (err) {
+      if (err.name !== 'AbortError') console.error(err);
+    }
   }
 
   function startSession() {
@@ -403,6 +471,7 @@
     const name = document.getElementById('nameInput').value.trim() || role;
     const studentId = document.getElementById('roomInput').value.trim().replace(/[^a-zA-Z0-9_-]/g, '');
 
+    document.getElementById('recSetupBar').style.display = role === 'tutor' ? 'flex' : 'none';
     currentConfig = { role, name, studentId };
     document.getElementById('panelTitle').innerText = `${name} (${role.toUpperCase()})`;
     document.getElementById('panelSub').innerText = `Room: ${studentId}`;
@@ -414,17 +483,12 @@
       setBadge('Waiting...', '#d97706');
       peer = new Peer(studentHostId);
 
-      peer.on('open', () => {
-        addSysMsg('Student logged in. Waiting for Tutor...');
-      });
-
+      peer.on('open', () => addSysMsg('Student logged in. Waiting for Tutor...'));
       peer.on('connection', (incomingConn) => {
         remotePeerId = incomingConn.peer;
         bindDataConnection(incomingConn);
       });
-
       peer.on('call', (call) => handleIncomingCall(call));
-
       peer.on('error', (err) => {
         if (err.type === 'unavailable-id') {
           addSysMsg('Another tab is already open as Student for this ID.');
@@ -447,7 +511,6 @@
       });
 
       peer.on('call', (call) => handleIncomingCall(call));
-
       peer.on('error', (err) => {
         if (err.type !== 'peer-unavailable') setBadge('Error', '#dc2626');
       });
@@ -504,7 +567,7 @@
   }
 
   // =========================================================
-  // TWO-WAY LIVE VOICE CALLING (WebRTC Audio)
+  // TWO-WAY VOICE CALL + AUTOMATIC TWO-TRACK RECORDING
   // =========================================================
   async function getMicStream() {
     return await navigator.mediaDevices.getUserMedia({
@@ -515,11 +578,10 @@
 
   async function startVoiceCall() {
     if (!peer || !remotePeerId || activeCall) return;
-
     try {
       localStream = await getMicStream();
     } catch (err) {
-      alert('Microphone permission is required for voice calling: ' + err.message);
+      alert('Microphone permission is required: ' + err.message);
       return;
     }
 
@@ -577,7 +639,20 @@
     call.on('stream', (remoteStream) => {
       const audioEl = document.getElementById('remoteAudio');
       audioEl.srcObject = remoteStream;
-      showCallBar('active', '🎙️ Voice Call Live', `
+
+      const shouldAutoRecord =
+        currentConfig.role === 'tutor' &&
+        document.getElementById('autoRecordToggle').checked;
+
+      if (shouldAutoRecord) {
+        startMixedRecording(localStream, remoteStream);
+      }
+
+      const label = shouldAutoRecord
+        ? '<span><span class="rec-dot"></span>Recording & Live</span>'
+        : '🎙️ Voice Call Live';
+
+      showCallBar('active', label, `
         <button class="btn-sm btn-mute" id="muteBtn" onclick="toggleMute()">Mute</button>
         <button class="btn-sm btn-end" onclick="endVoiceCall()">End Call</button>
       `);
@@ -588,9 +663,82 @@
       addSysMsg('Voice call ended.');
     });
 
-    call.on('error', () => {
-      endVoiceCall(true);
-    });
+    call.on('error', () => endVoiceCall(true));
+  }
+
+  function startMixedRecording(micStream, studentStream) {
+    try {
+      mixerAudioCtx = new AudioContext();
+      const destination = mixerAudioCtx.createMediaStreamDestination();
+
+      const micSource = mixerAudioCtx.createMediaStreamSource(micStream);
+      const studentSource = mixerAudioCtx.createMediaStreamSource(studentStream);
+
+      micSource.connect(destination);
+      studentSource.connect(destination);
+
+      recordedChunks = [];
+      mediaRecorder = new MediaRecorder(destination.stream, { mimeType: 'audio/webm' });
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+      };
+
+      mediaRecorder.onstop = () => saveRecordingFile();
+      mediaRecorder.start(1000); // Collect chunks every 1s for safety
+      addSysMsg('🔴 Auto-recording started (capturing both Tutor & Student audio).');
+    } catch (err) {
+      console.error('Recording failed to start:', err);
+    }
+  }
+
+  async function saveRecordingFile() {
+    if (!recordedChunks.length) return;
+
+    const blob = new Blob(recordedChunks, { type: 'audio/webm' });
+    recordedChunks = [];
+
+    const now = new Date();
+    const stamp = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}-${String(now.getMinutes()).padStart(2,'0')}`;
+    const filename = `Session_${currentConfig.studentId}_${stamp}.webm`;
+
+    // 1. Write directly into the Tutor's selected folder if granted
+    if (recordingsDirHandle) {
+      try {
+        const perm = await recordingsDirHandle.requestPermission({ mode: 'readwrite' });
+        if (perm === 'granted') {
+          const fileHandle = await recordingsDirHandle.getFileHandle(filename, { create: true });
+          const writable = await fileHandle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+          addSysMsg(`💾 Saved automatically: ${recordingsDirHandle.name}/${filename}`);
+          return;
+        }
+      } catch (err) {
+        console.warn('Direct folder write failed, falling back to download:', err);
+      }
+    }
+
+    // 2. Fallback: Automatic browser download to Downloads folder
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    addSysMsg(`💾 Recording downloaded as ${filename}`);
+  }
+
+  function stopRecordingIfActive() {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      mediaRecorder.stop();
+    }
+    if (mixerAudioCtx) {
+      mixerAudioCtx.close();
+      mixerAudioCtx = null;
+    }
   }
 
   function toggleMute() {
@@ -605,6 +753,8 @@
   }
 
   function endVoiceCall(silent = false) {
+    stopRecordingIfActive();
+
     if (activeCall) {
       activeCall.close();
       activeCall = null;
@@ -625,11 +775,11 @@
     if (!silent) addSysMsg('You ended the call.');
   }
 
-  function showCallBar(stateClass, text, controlsHtml) {
+  function showCallBar(stateClass, htmlText, controlsHtml) {
     const bar = document.getElementById('callBar');
     bar.className = `call-bar ${stateClass}`;
     bar.style.display = 'flex';
-    document.getElementById('callStatusText').innerText = text;
+    document.getElementById('callStatusText').innerHTML = htmlText;
     document.getElementById('callControls').innerHTML = controlsHtml;
   }
 
