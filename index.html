@@ -518,6 +518,7 @@
 
   let peer = null;
   let dataConn = null;
+  let pendingConn = null;
   let activeCall = null;
   let incomingCall = null;
   let localStream = null;
@@ -525,6 +526,24 @@
   let retryTimer = null;
   let remotePeerId = null;
   let currentConfig = {};
+
+  // Explicit STUN/TURN configuration to prevent WebRTC ICE stalls
+  const PEER_CONFIG = {
+    debug: 2,
+    config: {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:global.stun.twilio.com:3478' }
+        // Add TURN credentials here when testing across different Wi-Fi/cellular networks:
+        // {
+        //   urls: 'turn:your-turn-server.com:3478',
+        //   username: 'your-username',
+        //   credential: 'your-password'
+        // }
+      ]
+    }
+  };
 
   // Auto-Recording State
   let recordingsDirHandle = null;
@@ -573,14 +592,32 @@
   }
 
   function startSession() {
-    if (retryTimer) clearInterval(retryTimer);
+    if (retryTimer) {
+      clearInterval(retryTimer);
+      retryTimer = null;
+    }
+    if (pendingConn) {
+      pendingConn.close();
+      pendingConn = null;
+    }
     endVoiceCall(true);
-    if (dataConn) dataConn.close();
-    if (peer) peer.destroy();
+    if (dataConn) {
+      dataConn.close();
+      dataConn = null;
+    }
+    if (peer) {
+      peer.destroy();
+      peer = null;
+    }
 
     const role = document.getElementById('roleSelect').value;
     const name = document.getElementById('nameInput').value.trim() || role;
     const studentId = document.getElementById('roomInput').value.trim().replace(/[^a-zA-Z0-9_-]/g, '');
+
+    if (!studentId) {
+      addSysMsg('⚠️ Please enter a valid Student Login ID.');
+      return;
+    }
 
     document.getElementById('recSetupBar').style.display = role === 'tutor' ? 'flex' : 'none';
     currentConfig = { role, name, studentId };
@@ -592,48 +629,89 @@
 
     if (role === 'student') {
       setBadge('Waiting...', '#d97706');
-      peer = new Peer(studentHostId);
+      peer = new Peer(studentHostId, PEER_CONFIG);
 
-      peer.on('open', () => addSysMsg('Student logged in. Waiting for Tutor...'));
+      peer.on('open', (id) => {
+        addSysMsg(`Student logged in (ID: ${id}). Waiting for Tutor...`);
+      });
+
       peer.on('connection', (incomingConn) => {
+        if (dataConn && dataConn.open) dataConn.close();
         remotePeerId = incomingConn.peer;
         bindDataConnection(incomingConn);
       });
+
       peer.on('call', (call) => handleIncomingCall(call));
+
+      peer.on('disconnected', () => {
+        addSysMsg('⚠️ Signaling server disconnected. Reconnecting...');
+        peer.reconnect();
+      });
+
       peer.on('error', (err) => {
         if (err.type === 'unavailable-id') {
-          addSysMsg('Another tab is already open as Student for this ID.');
+          addSysMsg('⚠️ Another tab is already open as Student for this ID.');
+          setBadge('ID In Use', '#dc2626');
         } else {
+          addSysMsg(`⚠️ Connection error (${err.type}): ${err.message}`);
           setBadge('Error', '#dc2626');
         }
       });
 
     } else {
       setBadge('Connecting...', '#d97706');
-      peer = new Peer();
+      peer = new Peer(PEER_CONFIG);
 
       peer.on('open', () => {
         remotePeerId = studentHostId;
         addSysMsg(`Connecting to student "${studentId}"...`);
         attemptConnect(studentHostId);
+
         retryTimer = setInterval(() => {
-          if (!dataConn || !dataConn.open) attemptConnect(studentHostId);
-        }, 2500);
+          if (dataConn && dataConn.open) {
+            clearInterval(retryTimer);
+            retryTimer = null;
+            return;
+          }
+          attemptConnect(studentHostId);
+        }, 4000);
       });
 
       peer.on('call', (call) => handleIncomingCall(call));
+
       peer.on('error', (err) => {
-        if (err.type !== 'peer-unavailable') setBadge('Error', '#dc2626');
+        if (err.type === 'peer-unavailable') {
+          return;
+        }
+        addSysMsg(`⚠️ Tutor error (${err.type}): ${err.message}`);
+        setBadge('Error', '#dc2626');
       });
     }
   }
 
   function attemptConnect(targetId) {
+    if (!peer || peer.disconnected || peer.destroyed) return;
+
+    if (pendingConn) {
+      pendingConn.close();
+      pendingConn = null;
+    }
+
     const outgoing = peer.connect(targetId, { reliable: true });
+    pendingConn = outgoing;
+
     outgoing.on('open', () => {
-      if (retryTimer) clearInterval(retryTimer);
+      if (retryTimer) {
+        clearInterval(retryTimer);
+        retryTimer = null;
+      }
+      pendingConn = null;
       remotePeerId = targetId;
       bindDataConnection(outgoing);
+    });
+
+    outgoing.on('error', (err) => {
+      addSysMsg(`⚠️ DataChannel error: ${err.message}`);
     });
   }
 
